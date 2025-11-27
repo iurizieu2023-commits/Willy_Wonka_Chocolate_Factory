@@ -223,8 +223,8 @@ class DemandEngine(threading.Thread):
                             city.shipments_delayed[order.bar_type] = max(0, city.shipments_delayed[order.bar_type] - order.quantity)
                         
                         # Track lead times
-                        city.total_shipments += 1
-                        city.total_lead_time += lead_time
+                        city.completed_orders_count += 1
+                        city.total_fulfillment_time += lead_time
                         
                         # Phase 13: Log shipment arrival to database
                         if self.db_manager and hasattr(order, 'shipment_id'):
