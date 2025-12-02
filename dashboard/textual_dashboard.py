@@ -4,15 +4,19 @@ from textual.containers import Container
 from textual.reactive import reactive
 from rich.text import Text
 import time
+import threading
+
 
 class WonkaDashboard(App):
     """
     Phase 8-10: Tabbed Textual dashboard for multi-factory simulation.
     
     Tabs:
-    - Tab 1 (Overview): Factory table + Event log
+    - Tab 1 (Overview): Factory table + Events table + Event log
     - Tab 2 (Factories): Detailed factory metrics
     - Tab 3 (Stations): All stations across all factories
+    - Tab 4 (Cities): Cities & logistics (Phase 11)
+    - Tab 5 (Financials): Financial performance (Phase 13)
     """
 
     CSS = """
@@ -51,10 +55,18 @@ class WonkaDashboard(App):
     .status-finished {
         color: blue;
     }
+
+    #shutdown_overlay {
+        background: black;
+        color: yellow;
+        text-style: bold;
+        padding: 1 2;
+        height: auto;
+    }
     """
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
+        ("q", "request_shutdown", "Quit"),
         ("1", "switch_tab('overview')", "Overview"),
         ("2", "switch_tab('factories')", "Factories"),
         ("3", "switch_tab('stations')", "Stations"),
@@ -68,7 +80,9 @@ class WonkaDashboard(App):
         factories: list,
         event_bus,
         cities: list = None,
-        demand_engine = None,  # Phase 11: For delivery truck animation
+        demand_engine=None,  # Phase 11: For delivery truck animation
+        supervisor=None,
+        event_engine=None,
     ):
         super().__init__()
         self.simulation = simulation
@@ -76,15 +90,26 @@ class WonkaDashboard(App):
         self.cities = cities or []
         self.demand_engine = demand_engine  # Phase 11: Store for truck rendering
         self.event_bus = event_bus
+        self.supervisor = supervisor
+        self.event_engine = event_engine
 
+        # Flag so we stop updating UI / reacting to events once shutdown starts
+        self._shutdown_requested = False
+
+    # ------------------------------------------------------------
+    # COMPOSE
+    # ------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         
         # Phase 8-10: Tabbed content
         with TabbedContent(initial="overview"):
-            # Tab 1: Overview (original view)
+            # Tab 1: Overview (factories + events + log)
             with TabPane("Overview", id="overview"):
                 yield DataTable(id="overview_table")
+                # Global events table
+                yield DataTable(id="events_table")
+                # Log (mainly for golden tickets, etc.)
                 yield Log(id="overview_log")
             
             # Tab 2: Factories
@@ -103,11 +128,21 @@ class WonkaDashboard(App):
             with TabPane("Financials", id="financials"):
                 yield Static(id="financials_content")
         
+        # Shutdown overlay at the bottom
+        overlay = Static("", id="shutdown_overlay")
+        overlay.display = False 
+        yield overlay
+
         yield Footer()
 
+    # ------------------------------------------------------------
+    # MOUNT / SETUP
+    # ------------------------------------------------------------
     def on_mount(self) -> None:
         # Setup Overview tab
         self._setup_overview_tab()
+        # Events table
+        self._setup_events_table()
         
         # Setup Factories tab
         self._setup_factories_tab()
@@ -118,11 +153,11 @@ class WonkaDashboard(App):
         # Update all tabs periodically
         self.set_interval(0.25, self.update_all_tabs)
 
-        # Subscribe to events for event log
+        # Subscribe to events for event log & events table
         self.event_bus.subscribe_all(self.handle_simulation_event)
 
     def _setup_overview_tab(self) -> None:
-        """Setup Tab 1: Overview (original table + log)."""
+        """Setup Tab 1: Overview (factory summary table)."""
         table = self.query_one("#overview_table", DataTable)
         table.add_columns(
             "Factory", 
@@ -138,6 +173,17 @@ class WonkaDashboard(App):
         
         for factory in self.factories:
             table.add_row(*self._get_overview_row(factory), key=factory.name)
+
+    def _setup_events_table(self) -> None:
+        """Setup the global events table shown in the Overview tab."""
+        events_table = self.query_one("#events_table", DataTable)
+        events_table.add_columns(
+            "Time",
+            "Type",
+            "Factory/City",
+            "Station",
+            "Summary",
+        )
 
     def _setup_factories_tab(self) -> None:
         """Setup Tab 2: Factories (detailed metrics)."""
@@ -172,17 +218,22 @@ class WonkaDashboard(App):
             "Faulted?"
         )
 
+    # ------------------------------------------------------------
+    # PERIODIC UPDATES
+    # ------------------------------------------------------------
     def update_all_tabs(self) -> None:
         """Update all tabs."""
+        if self._shutdown_requested:
+            return
         self.update_overview_tab()
         self.update_factories_tab()
         self.update_stations_tab()
-        self.update_cities_tab()  # Phase 11
+        self.update_cities_tab()      # Phase 11
         self.update_financials_tab()  # Phase 13
     
     def update_cities_tab(self) -> None:
         """Update Cities & Logistics tab (Phase 11)."""
-        if not self.cities:
+        if not self.cities or self._shutdown_requested:
             return
         
         try:
@@ -193,18 +244,20 @@ class WonkaDashboard(App):
             demand_engine = getattr(self, 'demand_engine', None)
             renderable = render_cities_tab(self.cities, self.factories, demand_engine)
             cities_content.update(renderable)
-        except Exception as e:
+        except Exception:
             # Silently skip if cities_tab not available
             pass
     
     def update_financials_tab(self) -> None:
         """Update Tab 5: Financials (Phase 13)."""
+        if self._shutdown_requested:
+            return
         try:
             from dashboard.financials_tab import render_financials_tab
             financials_content = self.query_one("#financials_content", Static)
             renderable = render_financials_tab(self.factories)
             financials_content.update(renderable)
-        except Exception as e:
+        except Exception:
             # Silently skip if financials_tab not available
             pass
 
@@ -258,6 +311,9 @@ class WonkaDashboard(App):
                 ]
                 table.add_row(*row)
 
+    # ------------------------------------------------------------
+    # ROW BUILDERS
+    # ------------------------------------------------------------
     def _get_overview_row(self, factory):
         """Get row for Overview tab (original format)."""
         q_crushed = f"{factory.q_crushed.size()}/{factory.q_crushed.capacity}"
@@ -331,8 +387,13 @@ class WonkaDashboard(App):
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         return ansi_escape.sub('', activity_str)
 
+    # ------------------------------------------------------------
+    # EVENT HANDLING
+    # ------------------------------------------------------------
     def handle_simulation_event(self, event_type: str, data: dict) -> None:
         """Callback for EventBus events."""
+        if self._shutdown_requested:
+            return
         # Only log important events (not QC or supervisor metrics - too noisy)
         if event_type in ["item_boxed", "station_shutdown", "global_event"]:
             try:
@@ -341,8 +402,51 @@ class WonkaDashboard(App):
                 # App not running anymore, ignore
                 pass
 
+    def _pretty_event_type(self, event_type: str, data: dict) -> str:
+        """Human-readable event type for the events table."""
+        if event_type == "item_boxed" and data.get("golden"):
+            return "Golden ticket"
+        if event_type == "station_shutdown":
+            return "Station shutdown"
+        if event_type == "global_event":
+            evt = data.get("type")
+            mapping = {
+                "vip_visit": "VIP visit",
+                "robbery": "Robbery",
+                "transport_accident": "Transport accident",
+                "transport_delay": "Transport delay",
+                "demand_spike": "Demand spike",
+                "machine_breakdown": "Machine breakdown",
+            }
+            return mapping.get(evt, f"Global: {evt or 'event'}")
+        return event_type
+
+    def _append_event_row(self, event_type: str, data: dict, msg: str) -> None:
+        """Append a row to the Events table in the Overview tab."""
+        try:
+            events_table = self.query_one("#events_table", DataTable)
+        except Exception:
+            return
+
+        timestamp = time.strftime("%H:%M:%S")
+        pretty_type = self._pretty_event_type(event_type, data)
+
+        # Try to show something meaningful in "Factory/City"
+        factory = data.get("factory") or data.get("city") or "-"
+        station = data.get("station", "-")
+
+        events_table.add_row(
+            timestamp,
+            pretty_type,
+            str(factory),
+            str(station),
+            msg,
+        )
+
     def log_event(self, event_type: str, data: dict) -> None:
-        """Update the Log widget (must run on main thread)."""
+        """Update the Log widget (must run on main thread) and Events table."""
+        if self._shutdown_requested:
+            return
         log = self.query_one("#overview_log", Log)
         factory_name = data.get("factory", "Unknown")
         
@@ -395,14 +499,91 @@ class WonkaDashboard(App):
                 msg = data.get("msg", "Global event occurred")
         
         if msg:
+            # Write to existing log (green panel)
             log.write_line(msg)
+            # Also add a row to the Events table
+            self._append_event_row(event_type, data, msg)
 
+    # ------------------------------------------------------------
+    # ACTIONS
+    # ------------------------------------------------------------
     def action_switch_tab(self, tab_id: str) -> None:
         """Switch to a specific tab."""
+        if self._shutdown_requested:
+            return
         tabbed = self.query_one(TabbedContent)
         tabbed.active = tab_id
 
-def run_textual_dashboard(simulation, factories, event_bus, cities=None, demand_engine=None):
+    def action_request_shutdown(self) -> None:
+        """User pressed q -> graceful shutdown."""
+        if self._shutdown_requested:
+            return
+
+        self._shutdown_requested = True
+
+        # Show overlay message
+        try:
+            overlay = self.query_one("#shutdown_overlay", Static)
+            overlay.update(
+                "🛑 Stopping simulation...\n"
+                "Please wait while threads shut down cleanly."
+            )
+            overlay.display = True
+        except Exception:
+            pass
+
+        # Run shutdown steps in a background thread
+        def shutdown_worker():
+            try:
+                # Stop supervisor first (if any)
+                if self.supervisor and hasattr(self.supervisor, "stop"):
+                    self.supervisor.stop()
+
+                # Stop demand engine (if provided)
+                if self.demand_engine and hasattr(self.demand_engine, "stop"):
+                    self.demand_engine.stop()
+
+                # Stop event engine if we have a ref
+                if self.event_engine and hasattr(self.event_engine, "stop"):
+                    self.event_engine.stop()
+
+                # Ask simulation to stop factories + stations
+                if self.simulation and hasattr(self.simulation, "shutdown_all"):
+                    self.simulation.shutdown_all()
+
+                # Optionally stop event bus if it has a stop method
+                if self.event_bus and hasattr(self.event_bus, "stop"):
+                    self.event_bus.stop()
+
+                # Give threads a tiny moment to finish logs, etc.
+                time.sleep(0.5)
+
+            except Exception as e:
+                print("Error during graceful shutdown:", e)
+
+            # Close the TUI from the main thread
+            self.call_from_thread(self.exit)
+
+        threading.Thread(target=shutdown_worker, daemon=True).start()
+
+
+def run_textual_dashboard(
+    simulation,
+    factories,
+    event_bus,
+    cities=None,
+    demand_engine=None,
+    supervisor=None,
+    event_engine=None,
+):
     """Run the Textual TUI dashboard."""
-    app = WonkaDashboard(simulation, factories, event_bus, cities, demand_engine)
+    app = WonkaDashboard(
+        simulation,
+        factories,
+        event_bus,
+        cities,
+        demand_engine,
+        supervisor,
+        event_engine,
+    )
     app.run()

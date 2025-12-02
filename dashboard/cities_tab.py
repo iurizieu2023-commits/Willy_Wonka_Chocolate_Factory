@@ -223,8 +223,8 @@ def render_cities_tab(cities: List[City], factories: List = None, demand_engine=
     total_delayed = sum(sum(c.shipments_delayed.values()) for c in cities)
     total_completed = sum(c.completed_orders_count for c in cities)
     
-    # Calculate global delayed %
-    delayed_pct = (total_delayed / (total_completed + total_delayed) * 100) if (total_completed + total_delayed) > 0 else 0
+    # Calculate global delayed % (relative to active shipments)
+    delayed_pct = (total_delayed / total_transit * 100) if total_transit > 0 else 0
     
     summary = (f"📊 Total: {total_orders} orders open | {total_transit} in transit | "
                f"{total_delayed} delayed ({delayed_pct:.1f}%) | {total_completed} delivered")

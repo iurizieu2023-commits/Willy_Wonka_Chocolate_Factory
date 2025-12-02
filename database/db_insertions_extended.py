@@ -186,6 +186,49 @@ __all__ = [
     "update_shipment_arrival",
 ]
 
+def insert_transport_loss(
+    shipment_id: int,
+    lost_units: int,
+    loss_value: float
+) -> None:
+    """
+    Record transport spoilage and its financial impact.
+
+    - Adds lost_units to shipments.spoilage
+    - Writes a logistics_cost entry into profit_ledger
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # 1) Update shipments.spoilage
+    cur.execute(
+        """
+        UPDATE shipments
+        SET spoilage = COALESCE(spoilage, 0) + ?
+        WHERE id = ?
+        """,
+        (int(lost_units), int(shipment_id))
+    )
+    conn.commit()
+    conn.close()
+
+    # 2) Log as a logistics cost in profit_ledger
+    # Look up factory_id from shipments table
+    cur.execute("SELECT factory_id FROM shipments WHERE id = ?", (int(shipment_id),))
+    row = cur.fetchone()
+    factory_id = row[0] if row else None
+
+    insert_profit_entry(
+        factory_id=factory_id,
+        city_id=None,
+        revenue=0.0,
+        cogs=0.0,
+        event_cost=0.0,
+        logistics_cost=float(loss_value),
+        ref_type="transport_loss",
+        ref_id=int(shipment_id),
+    )
+
 
 def insert_supervisor_action(
     factory_id: int,
@@ -307,7 +350,9 @@ __all__ = [
     "insert_city",
     "insert_shipment",
     "update_shipment_arrival",
+    "insert_transport_loss",
     "insert_supervisor_action",
     "insert_demand_snapshot",
     "insert_routing_decision",
 ]
+

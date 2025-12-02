@@ -20,7 +20,7 @@ class Item:
         self.created_at = time.time()
         
         # Golden ticket (rare - 10% chance)
-        self.is_golden = random.random() < 0.10
+        self.is_golden = random.random() < 0.04
         # "bar" / "coin" / "bunny" / etc.
         
         # Phase 1: Multi-flavour chocolate bars (DEPRECATED in favor of bar_type)

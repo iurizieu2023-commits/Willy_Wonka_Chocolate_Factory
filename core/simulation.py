@@ -12,6 +12,8 @@ from core.factory import Factory
 from core.supervisor import Supervisor
 from strategies.supervisor_strategy import SupervisorStrategy
 from strategies.aggressive_supervisor import AggressiveSupervisor
+import global_state
+
 
 
 class Simulation:

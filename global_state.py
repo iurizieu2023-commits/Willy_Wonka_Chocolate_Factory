@@ -5,3 +5,4 @@ from typing import List
 factory_ids: List[str] = []
 cities: List[object] = []
 event_log: List[str] = []
+demand_engine = None

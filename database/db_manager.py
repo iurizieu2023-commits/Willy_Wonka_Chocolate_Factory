@@ -54,10 +54,19 @@ class DatabaseManager:
         self.queue_ids: Dict[str, int] = {}
         self.city_ids: Dict[str, int] = {}
         self.shipment_ids: Dict[str, int] = {}  # order_id -> shipment_id
+
+        # NEW: expose a sqlite connection so report.py can use it
+        self.conn = None
         
         if self.enabled:
             initialize_database()
+            # keep a persistent connection for reporting / summaries
+            try:
+                self.conn = get_connection()
+            except Exception:
+                self.conn = None
             print("✅ Database initialized")
+
     
     def register_factory(self, factory) -> int:
         """
@@ -249,6 +258,20 @@ class DatabaseManager:
             ref_id=None
         )
     
+    def log_transport_loss(self, shipment_id: int, lost_units: int, loss_value: float) -> None:
+        """Log transport spoilage + its financial impact."""
+        if not self.enabled:
+            return
+
+        from .db_insertions_extended import insert_transport_loss
+
+        insert_transport_loss(
+            shipment_id=shipment_id,
+            lost_units=lost_units,
+            loss_value=loss_value,
+        )
+
+
     def log_shipment_start(self, order) -> Optional[int]:
         """
         Log when a shipment departs.
@@ -293,7 +316,7 @@ class DatabaseManager:
         if shipment_id:
             update_shipment_arrival(
                 shipment_id=shipment_id,
-            status="DELIVERED",
+                status="DELIVERED",
                 transit_time_s=transit_time_s,
                 spoilage=0
             )
@@ -340,6 +363,13 @@ class DatabaseManager:
     def close(self) -> None:
         """Clean shutdown (if needed)."""
         if self.enabled:
+            # NEW: close the SQLite connection if we created one
+            conn = getattr(self, "conn", None)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             print("✅ Database operations complete")
 
 

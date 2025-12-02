@@ -9,7 +9,6 @@ from logistics.order import Order
 from core.chocolate_type import ChocolateType
 from observers.event_bus import EventBus
 
-
 class DemandEngine(threading.Thread):
     """
     Background thread that generates orders based on city demand.
@@ -37,6 +36,7 @@ class DemandEngine(threading.Thread):
         self.factories = factories or []
         self.period = period
         self.order_rate = order_rate
+        self.active_shipments = []
         
         # Phase 11: Routing strategy
         if routing_strategy is None:
@@ -177,7 +177,47 @@ class DemandEngine(threading.Thread):
                     "quantity": quantity,
                     "factory": order.assigned_factory,
                 })
-    
+
+    def apply_transport_accident(self, city_name: str, loss_pct: float):
+        """Apply spoilage to all shipments currently in transit to the city."""
+
+        # Filter shipments going to that city
+        shipments = [
+            s for s in self.active_shipments
+            if s.city_name == city_name
+        ]
+
+        if not shipments:
+            return  # No active shipments → nothing to spoil
+
+        for order in shipments:
+            # Compute spoiled units
+            lost_units = int(order.quantity * loss_pct)
+
+            # Reduce order quantity
+            order.quantity = max(0, order.quantity - lost_units)
+
+            # Financial loss to factory
+            factory = next(f for f in self.factories if f.name == order.assigned_factory)
+            loss_value = lost_units * factory.revenue_per_item
+            factory.transport_losses += loss_value
+            print(f"[DEBUG] ACCIDENT {city_name}: lost {lost_units} units, "
+                    f"loss_value={loss_value:.2f}, transport_losses={factory.transport_losses}")
+
+
+            # Log DB spoilage if db_manager exists
+            if factory._db_manager:
+                try:
+                    factory._db_manager.log_transport_loss(
+                        order.shipment_id,
+                        lost_units,
+                        loss_value
+                    )
+                except Exception:
+                    pass
+
+
+
     def _update_order_statuses(self) -> None:
         """Update order statuses and simulate deliveries."""
         current_time = time.time()
@@ -187,6 +227,14 @@ class DemandEngine(threading.Thread):
                 # Check if it should be in transit
                 if current_time > order.created_at + 5:  # 5s delay before transit
                     order.status = "IN_TRANSIT"
+                    self.event_bus.publish("shipment_departed", {
+                        "city": order.city_name,
+                        "factory": order.assigned_factory,
+                        "bar_type": order.bar_type.value,
+                        "quantity": order.quantity,
+                    })
+                    # Track as active shipment so accidents can spoil it
+                    self.active_shipments.append(order)
                     
                     # Find city
                     city = next((c for c in self.cities if c.name == order.city_name), None)
@@ -201,7 +249,11 @@ class DemandEngine(threading.Thread):
                     if current_time < city.weather_disruption_until:
                         # Order is delayed by weather - extend ETA if not already done
                         if not hasattr(order, '_weather_delayed'):
-                            order.eta *= city.weather_disruption_multiplier
+                            # Fix: Multiply duration, not timestamp
+                            original_duration = order.eta - order.created_at
+                            added_delay = original_duration * (city.weather_disruption_multiplier - 1.0)
+                            order.eta += added_delay
+                            
                             order._weather_delayed = True
                             city.shipments_delayed[order.bar_type] += order.quantity
                         continue  # Don't deliver yet, still delayed
@@ -212,6 +264,8 @@ class DemandEngine(threading.Thread):
                     order.status = "DELIVERED"
                     lead_time = current_time - order.created_at
                     transit_time_s = int(lead_time)
+                    if order in self.active_shipments:
+                        self.active_shipments.remove(order)
                     
                     # Update city metrics
                     if city:
@@ -246,3 +300,5 @@ class DemandEngine(threading.Thread):
                         "quantity": order.quantity,
                         "lead_time": order.lead_time(),
                     })
+          
+

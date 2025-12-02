@@ -80,7 +80,7 @@ def render_financials_tab(factories: List) -> RenderableType:
         total_items += items
         total_breakdown_costs += factory.breakdown_costs
         total_transport_losses += factory.transport_losses
-    
+        
     # Global summary
     total_profit = total_revenue - total_cost
     global_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0.0
@@ -113,6 +113,8 @@ def render_financials_tab(factories: List) -> RenderableType:
     else:
         prod_pct = break_pct = trans_pct = 0.0
     
+
+
     breakdown_lines = [
         f"Production:        ${production_costs:,.0f}  ({prod_pct:.1f}%)",
         f"Breakdowns:        ${total_breakdown_costs:,.0f}  ({break_pct:.1f}%)",
